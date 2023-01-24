@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/gob"
 	"fmt"
 	"log"
 	"net"
@@ -62,16 +61,6 @@ func New(listenAddr, remoteAddr string, maxConns int) (*Server, error) {
 	return tcpc, nil
 }
 
-func (t *Server) loop() {
-	for {
-		msg := <-t.Sendchan
-		log.Println("sending msg over the wire: ", msg)
-		if err := gob.NewEncoder(t.outboundConn).Encode(&msg); err != nil {
-			log.Println(err)
-		}
-	}
-}
-
 func (t *Server) acceptLoop() {
 	defer func() {
 		t.ln.Close()
@@ -85,7 +74,12 @@ func (t *Server) acceptLoop() {
 		}
 
 		log.Printf("client connected %s", conn.RemoteAddr())
-		log.Printf("number of client connected %v", t.users.Add(1))
+		if len(t.cache.data) == 0 {
+			log.Printf("number of client connected %v", t.users.Add(0))
+		} else {
+			log.Printf("number of client connected %v", t.users.Add(1))
+
+		}
 
 		go t.handleConn(conn)
 		go t.handleCommands(conn)
