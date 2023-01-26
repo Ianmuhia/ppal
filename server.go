@@ -11,41 +11,32 @@ import (
 	"golang.org/x/net/netutil"
 )
 
-type rank int
-
-const (
-	Low rank = iota
-	Medium
-	High
-	Print = "print"
-	Hello = "hello"
-)
-
+// commands list of commands the clients
+// can send to the server.
 type commands struct {
 	Rank int    `json:"rank"`
 	Cmd  string `json:"cmd"`
 }
 
 type Server struct {
-	listenAddr string
-	remoteAddr string
-	maxConns   int
-	users      atomic.Int32
-	cmds       []commands
-	ln         net.Listener
-	cache      *Cache
+	maxConns int
+	users    atomic.Int32
+	cmds     []commands
+	ln       net.Listener
+	cache    *Cache
 }
 
-type ConnectedUsers struct {
+// Client is a single connected client.
+type Client struct {
 	rank int
 	id   string
 	conn net.Conn
 }
 
-func New(listenAddr, remoteAddr string, maxConns int) (*Server, error) {
+// NewServer creates a new server instance with the provided parameters.
+// It also initialises the cache.
+func NewServer(listenAddr string, maxConns int) (*Server, error) {
 	tcpc := &Server{
-		listenAddr: listenAddr,
-		remoteAddr: remoteAddr,
 		cmds: []commands{
 			{
 				Rank: 0,
@@ -77,6 +68,8 @@ func New(listenAddr, remoteAddr string, maxConns int) (*Server, error) {
 	return tcpc, nil
 }
 
+// acceptLoop listens for connections runs 2 groutines.
+// one to handle the commands and the other to write data to the cache.
 func (t *Server) acceptLoop() {
 	defer func() {
 		t.ln.Close()
@@ -94,17 +87,15 @@ func (t *Server) acceptLoop() {
 			log.Printf("number of client connected %v", t.users.Add(0))
 		} else {
 			log.Printf("number of client connected %v", t.users.Add(1))
-
 		}
 
-		go t.handleConn(conn)
-		go t.handleCommands(conn)
-
+		go t.HandleConn(conn)
+		go t.HandleCommands(conn)
 	}
 }
 
-func (t *Server) handleConn(conn net.Conn) {
-	t.cache.Set(&ConnectedUsers{rank: int(t.users.Load()), id: conn.RemoteAddr().String(), conn: conn}, conn.RemoteAddr().String())
+func (t *Server) HandleConn(conn net.Conn) {
+	t.cache.Set(&Client{rank: int(t.users.Load()), id: conn.RemoteAddr().String(), conn: conn}, conn.RemoteAddr().String())
 	k, err := json.MarshalIndent(t.cmds, "", "    ")
 	if err != nil {
 		log.Print(err)
@@ -118,13 +109,15 @@ func (t *Server) handleConn(conn net.Conn) {
 }
 
 func (t *Server) writeConn(conn net.Conn, data []byte) {
-	_, err := conn.Write(data)
-	if err != nil {
+	if _, err := conn.Write(data); err != nil {
 		log.Print(err)
 	}
 }
 
-func (t *Server) handleCommands(conn net.Conn) {
+// handleCommands listens for client commands and matches then to thier
+// respective ranks.If the client disconnects the remover fuctions closes the
+// connection and adjusts the remaing client ranks.
+func (t *Server) HandleCommands(conn net.Conn) {
 	for {
 		key := conn.RemoteAddr().String()
 		v, ok := t.cache.Get(key)
@@ -135,16 +128,11 @@ func (t *Server) handleCommands(conn net.Conn) {
 		buffer := make([]byte, 1024)
 		g, err := conn.Read(buffer)
 		if err != nil {
-			v, ok := t.cache.Get(key)
-			if !ok {
-				log.Println("error getting client from cache")
-			}
-			t.remover(conn, v)
+			t.Remover(conn, v)
 			return
 		}
 
 		cmd := strings.TrimSpace(string(buffer[:g]))
-
 		contains := func(item string, i int) bool {
 			for _, k := range t.cmds {
 				if k.Cmd == item && i > k.Rank {
@@ -153,30 +141,25 @@ func (t *Server) handleCommands(conn net.Conn) {
 			}
 			return false
 		}(cmd, v.rank)
-
-		if contains {
-			for _, v := range t.cache.data {
-
-				t.writeConn(v.conn, []byte(fmt.Sprintf("\t%v\n\t", cmd)))
-
-			}
-		} else if cmd == "q" {
-			t.remover(conn, v)
-		} else {
+		// check if the command and ranks are a match
+		if !contains {
 			t.writeConn(conn, []byte(fmt.Sprintf("\tunknown command: [%s] or rank is not allowed to execute\t\n", v.id)))
-
 		}
-
+		for _, v := range t.cache.data {
+			t.writeConn(v.conn, []byte(fmt.Sprintf("\t%v\n\t", cmd)))
+		}
 	}
 }
 
-func (t *Server) remover(conn net.Conn, v *ConnectedUsers) {
+// Remover deletes a client from the cache and re-adjusts the remaing client ranks
+// to fill in the gaps left.
+func (t *Server) Remover(conn net.Conn, v *Client) {
 	_ = t.cache.Del(conn.RemoteAddr().String())
 	for _, j := range t.cache.data {
 		if j.rank > v.rank {
 			log.Print(strings.Repeat("*", 100))
 			log.Printf("before key: [%v]  value: [%v] ", j.id, j.rank)
-			t.cache.Set(&ConnectedUsers{rank: j.rank - 1, id: j.id, conn: j.conn}, j.id)
+			t.cache.Set(&Client{rank: j.rank - 1, id: j.id, conn: j.conn}, j.id)
 			u, _ := t.cache.Get(j.id)
 			log.Printf("after key: [%v]  value: [%v] ", u.id, u.rank)
 			log.Print(strings.Repeat("*", 100))

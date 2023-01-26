@@ -13,15 +13,13 @@ const (
 )
 
 func main() {
-
 	c := flag.Int("c", defaultMaxConn, "maximum number of client connections the server will accept, 0 means unlimited")
 	flag.Parse()
 
-	channelLocal, err := New("localhost:3000", ":4000", *c)
+	channelLocal, err := NewServer("localhost:3000", *c)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	channelLocal.acceptLoop()
-
 }
