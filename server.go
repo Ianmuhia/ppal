@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -20,16 +21,19 @@ const (
 	Hello = "hello"
 )
 
+type commands struct {
+	Rank int    `json:"rank"`
+	Cmd  string `json:"cmd"`
+}
+
 type Server struct {
-	listenAddr   string
-	remoteAddr   string
-	maxConns     int
-	users        atomic.Int32
-	Sendchan     chan string
-	Recvchan     chan string
-	outboundConn net.Conn
-	ln           net.Listener
-	cache        *Cache
+	listenAddr string
+	remoteAddr string
+	maxConns   int
+	users      atomic.Int32
+	cmds       []commands
+	ln         net.Listener
+	cache      *Cache
 }
 
 type ConnectedUsers struct {
@@ -42,10 +46,22 @@ func New(listenAddr, remoteAddr string, maxConns int) (*Server, error) {
 	tcpc := &Server{
 		listenAddr: listenAddr,
 		remoteAddr: remoteAddr,
-		Sendchan:   make(chan string, 10),
-		Recvchan:   make(chan string, 10),
-		maxConns:   maxConns,
-		cache:      NewCache(),
+		cmds: []commands{
+			{
+				Rank: 0,
+				Cmd:  "print",
+			}, {
+				Rank: 1,
+				Cmd:  "hello",
+			}, {
+				Rank: 2,
+				Cmd:  "hi",
+			}, {
+				Rank: 3,
+				Cmd:  "hi",
+			}},
+		maxConns: maxConns,
+		cache:    NewCache(),
 	}
 
 	ln, err := net.Listen("tcp", listenAddr)
@@ -83,19 +99,29 @@ func (t *Server) acceptLoop() {
 
 		go t.handleConn(conn)
 		go t.handleCommands(conn)
+
 	}
 }
 
 func (t *Server) handleConn(conn net.Conn) {
 	t.cache.Set(&ConnectedUsers{rank: int(t.users.Load()), id: conn.RemoteAddr().String(), conn: conn}, conn.RemoteAddr().String())
-}
-
-func (t *Server) writeConn(conn net.Conn, data []byte) {
-	l, err := conn.Write(data)
+	k, err := json.MarshalIndent(t.cmds, "", "    ")
 	if err != nil {
 		log.Print(err)
 	}
-	log.Printf("wrote %v bytes", l)
+	d, ok := t.cache.Get(conn.RemoteAddr().String())
+	if !ok {
+		log.Println("error getting client from cache")
+	}
+	u := fmt.Sprintf("connection sucessful. your rank is %v\n Avilable commands and ranks are You can only execute command below you rank: \n\t\t\t%v\n", d.rank, string(k))
+	t.writeConn(conn, []byte(u))
+}
+
+func (t *Server) writeConn(conn net.Conn, data []byte) {
+	_, err := conn.Write(data)
+	if err != nil {
+		log.Print(err)
+	}
 }
 
 func (t *Server) handleCommands(conn net.Conn) {
@@ -107,41 +133,46 @@ func (t *Server) handleCommands(conn net.Conn) {
 			log.Print(err)
 			continue
 		}
-		log.Print(string(buffer[:g]))
 		v, ok := t.cache.Get(conn.RemoteAddr().String())
 		if !ok {
 			log.Println("error getting client from cache")
 		}
 
 		cmd := strings.TrimSpace(string(buffer[:g]))
-		switch cmd {
-		case "hello":
-			if v.rank != 1 {
-				c := fmt.Sprintf("command %v rejected, rank not allowed  your rank is %v", cmd, v.rank)
-				t.writeConn(v.conn, []byte(c))
-				return
+
+		contains := func(item string, i int) bool {
+			for _, k := range t.cmds {
+				if k.Cmd == item && i > k.Rank {
+					return true
+				}
 			}
+			return false
+		}(cmd, v.rank)
+
+		if contains {
 			for _, v := range t.cache.data {
-				t.writeConn(v.conn, []byte(cmd))
+
+				t.writeConn(v.conn, []byte(fmt.Sprintf("\t%v\n\t", cmd)))
+
 			}
-		case "print":
-			if v.rank != 1 {
-				c := fmt.Sprintf("command %v rejected, rank not allowed  your rank is %v", cmd, v.rank)
-				t.writeConn(v.conn, []byte(c))
-				return
-			}
-			for _, v := range t.cache.data {
-				t.writeConn(v.conn, []byte(cmd))
+		} else if cmd == "q" {
+			_ = t.cache.Del(conn.RemoteAddr().String())
+			for _, j := range t.cache.data {
+				if j.rank > v.rank {
+					log.Print(strings.Repeat("*", 100))
+					log.Printf("before key: [%v]  value: [%v] ", j.id, j.rank)
+					t.cache.Set(&ConnectedUsers{rank: j.rank - 1, id: j.id, conn: j.conn}, j.id)
+					u, _ := t.cache.Get(j.id)
+					log.Printf("after key: [%v]  value: [%v] ", u.id, u.rank)
+					log.Print(strings.Repeat("*", 100))
+				}
+				t.writeConn(j.conn, []byte(fmt.Sprintf("\tconn: [%s] disconnected\t\n", v.id)))
 			}
 
-		default:
-			cmd := fmt.Sprintf("unknown command %v", string(buffer))
-			for _, v := range t.cache.data {
-				t.writeConn(v.conn, []byte(cmd))
-			}
+		} else {
+			t.writeConn(conn, []byte(fmt.Sprintf("\tunknown command: [%s] or rank is not allowed to execute\t\n", v.id)))
 
 		}
 
 	}
-
 }

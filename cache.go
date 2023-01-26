@@ -36,4 +36,12 @@ func (c *Cache) Set(val *ConnectedUsers, key string) {
 		c.data[key] = val
 		log.Printf("wrote key: [%v]  value: [%v]  to cache", val.id, val.rank)
 	}
+} // Del Deletes the token to cache.
+func (c *Cache) Del(key string) string {
+	defer c.lock.Unlock()
+	if c.lock.TryLock() {
+		delete(c.data, key)
+		log.Printf("deleted key: [%v]  to cache", key)
+	}
+	return key
 }

@@ -24,7 +24,4 @@ func main() {
 
 	channelLocal.acceptLoop()
 
-	msg := <-channelLocal.Recvchan
-	log.Print(msg)
-
 }
