@@ -126,16 +126,21 @@ func (t *Server) writeConn(conn net.Conn, data []byte) {
 
 func (t *Server) handleCommands(conn net.Conn) {
 	for {
+		key := conn.RemoteAddr().String()
+		v, ok := t.cache.Get(key)
+		if !ok {
+			log.Println("error getting client from cache")
+		}
 		// incoming request
 		buffer := make([]byte, 1024)
 		g, err := conn.Read(buffer)
 		if err != nil {
-			log.Print(err)
-			continue
-		}
-		v, ok := t.cache.Get(conn.RemoteAddr().String())
-		if !ok {
-			log.Println("error getting client from cache")
+			v, ok := t.cache.Get(key)
+			if !ok {
+				log.Println("error getting client from cache")
+			}
+			t.remover(conn, v)
+			return
 		}
 
 		cmd := strings.TrimSpace(string(buffer[:g]))
@@ -156,23 +161,27 @@ func (t *Server) handleCommands(conn net.Conn) {
 
 			}
 		} else if cmd == "q" {
-			_ = t.cache.Del(conn.RemoteAddr().String())
-			for _, j := range t.cache.data {
-				if j.rank > v.rank {
-					log.Print(strings.Repeat("*", 100))
-					log.Printf("before key: [%v]  value: [%v] ", j.id, j.rank)
-					t.cache.Set(&ConnectedUsers{rank: j.rank - 1, id: j.id, conn: j.conn}, j.id)
-					u, _ := t.cache.Get(j.id)
-					log.Printf("after key: [%v]  value: [%v] ", u.id, u.rank)
-					log.Print(strings.Repeat("*", 100))
-				}
-				t.writeConn(j.conn, []byte(fmt.Sprintf("\tconn: [%s] disconnected\t\n", v.id)))
-			}
-
+			t.remover(conn, v)
 		} else {
 			t.writeConn(conn, []byte(fmt.Sprintf("\tunknown command: [%s] or rank is not allowed to execute\t\n", v.id)))
 
 		}
 
 	}
+}
+
+func (t *Server) remover(conn net.Conn, v *ConnectedUsers) {
+	_ = t.cache.Del(conn.RemoteAddr().String())
+	for _, j := range t.cache.data {
+		if j.rank > v.rank {
+			log.Print(strings.Repeat("*", 100))
+			log.Printf("before key: [%v]  value: [%v] ", j.id, j.rank)
+			t.cache.Set(&ConnectedUsers{rank: j.rank - 1, id: j.id, conn: j.conn}, j.id)
+			u, _ := t.cache.Get(j.id)
+			log.Printf("after key: [%v]  value: [%v] ", u.id, u.rank)
+			log.Print(strings.Repeat("*", 100))
+			t.writeConn(j.conn, []byte(fmt.Sprintf("\tconn: [%s] disconnected, your new rank is %v\t\n ", v.id, u.rank)))
+		}
+	}
+	conn.Close()
 }
